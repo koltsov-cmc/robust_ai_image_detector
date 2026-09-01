@@ -131,7 +131,20 @@ class Model(BaseDeepFakeModel):
             elif 'model' in state_dict:
                 state_dict = state_dict['model']
             
-            self.net.load_state_dict(state_dict)
+            # The text tower is never used at inference (only vision_model is
+            # called in forward), and the shape of its projection head depends on
+            # the transformers version, so drop it and load the rest strictly.
+            state_dict = {
+                k: v for k, v in state_dict.items()
+                if not k.startswith("backbone.model.text_model.")
+            }
+            missing, unexpected = self.net.load_state_dict(state_dict, strict=False)
+            unexpected = list(unexpected)
+            missing = [k for k in missing if not k.startswith("backbone.model.text_model.")]
+            if missing or unexpected:
+                raise RuntimeError(
+                    f"Unexpected checkpoint mismatch: missing={missing} unexpected={unexpected}"
+                )
             print(f"Loaded weights from {self.ckpt_path}")
         else:
             print(f"WARNING: Checkpoint {self.ckpt_path} not found! Model will use random weights.")
