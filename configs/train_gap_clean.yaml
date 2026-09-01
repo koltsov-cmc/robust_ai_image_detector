@@ -1,0 +1,35 @@
+# Fixed config for: python train.py --experiment evaclipb_gap_clean
+experiment: evaclipb_gap_clean
+augmentation_mode: clean
+seed: 3407
+
+model:
+  id: timm/eva02_base_patch16_clip_224.merged2b_s8b_b131k
+  local_dir: pretrained/eva02_clip_b16
+  cache_dir: null
+
+preprocessing:
+  image_size: 384
+
+dataloader:
+  batch_size: 64
+  num_workers: 8
+
+training:
+  max_epochs: 25
+  max_grad_norm: 1.0
+  log_interval_steps: 100
+  optimizer:
+    name: adamw
+    learning_rate: 1.0e-3
+    weight_decay: 0.01
+  scheduler:
+    name: cosine_with_warmup
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.01
+  early_stopping:
+    metric: clean_validation_roc_auc
+    mode: max
+    patience: 5
+
+distortions: null
