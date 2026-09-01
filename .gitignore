@@ -2,3 +2,4 @@ ntire/
 .cache/
 *venv/
 *.venv/
+*weights/
