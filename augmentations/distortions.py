@@ -38,12 +38,12 @@ def _levels(parameter: str, values: list[float | int]) -> dict[int, dict[str, fl
 
 DISTORTION_SPECS: dict[str, DistortionSpec] = {
     "jpeg": DistortionSpec("compression", _levels("quality", [95, 80, 60, 40, 20])),
-    "gaussian_blur": DistortionSpec("blur", _levels("sigma", [0.5, 1.0, 1.5, 2.0, 3.0])),
+    "gaussian_blur": DistortionSpec("blur", _levels("sigma", [0.75, 1.0, 1.5, 2.0, 3.0])),
     "motion_blur": DistortionSpec("blur", _levels("kernel_size", [3, 5, 7, 11, 15])),
     "gaussian_noise": DistortionSpec("noise", _levels("sigma", [2, 5, 10, 15, 25])),
     "brightness_shift": DistortionSpec("brightness", _levels("magnitude", [0.05, 0.10, 0.20, 0.30, 0.40])),
     "saturation_shift": DistortionSpec("color", _levels("magnitude", [0.10, 0.20, 0.35, 0.50, 0.70])),
-    "downsample_upscale": DistortionSpec("spatial", _levels("scale", [0.90, 0.75, 0.60, 0.40, 0.25])),
+    "downsample_upscale": DistortionSpec("spatial", _levels("scale", [0.80, 0.65, 0.50, 0.35, 0.20])),
     "random_crop_resize": DistortionSpec("spatial", _levels("area_ratio", [0.95, 0.90, 0.80, 0.70, 0.60])),
     # The five target rates in the official reference software's
     # cfg/pipeline.json, ordered here from mild to severe distortion.

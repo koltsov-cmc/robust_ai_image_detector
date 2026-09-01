@@ -10,12 +10,12 @@ severity levels each:
 | Name | Severity 1 to 5 |
 | --- | --- |
 | `jpeg` | JPEG quality: 95, 80, 60, 40, 20 |
-| `gaussian_blur` | sigma: 0.5, 1.0, 1.5, 2.0, 3.0 |
+| `gaussian_blur` | sigma: 0.75, 1.0, 1.5, 2.0, 3.0 |
 | `motion_blur` | kernel size: 3, 5, 7, 11, 15 |
 | `gaussian_noise` | sigma: 2, 5, 10, 15, 25 |
 | `brightness_shift` | magnitude: 0.05, 0.10, 0.20, 0.30, 0.40 |
 | `saturation_shift` | magnitude: 0.10, 0.20, 0.35, 0.50, 0.70 |
-| `downsample_upscale` | scale: 0.90, 0.75, 0.60, 0.40, 0.25 |
+| `downsample_upscale` | scale: 0.80, 0.65, 0.50, 0.35, 0.20 |
 | `random_crop_resize` | retained area: 0.95, 0.90, 0.80, 0.70, 0.60 |
 | `jpeg_ai` | target bpp: 1.00, 0.75, 0.50, 0.25, 0.12 |
 
