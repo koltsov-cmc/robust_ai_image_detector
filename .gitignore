@@ -3,3 +3,6 @@ ntire/
 *venv/
 *.venv/
 *weights/
+pretrained
+runs
+*__pycache__/
