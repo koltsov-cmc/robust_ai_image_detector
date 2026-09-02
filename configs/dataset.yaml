@@ -29,9 +29,7 @@ splits:
     sampling: balanced
     seed: 3407
   test:
-    directory: test/test
-    images_manifest: test/test_images_test.csv
-    image_column: image_name
+    directory: test/test_images
     labels_manifest: test/test_labels.csv
     labels_image_column: image_name
     label_column: label

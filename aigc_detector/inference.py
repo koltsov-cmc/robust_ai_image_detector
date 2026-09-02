@@ -39,6 +39,18 @@ def _load_checkpoint(path: Path, expected_experiment: str) -> dict[str, Any]:
     return checkpoint
 
 
+def _rounded_roc_auc(subset: list[dict[str, Any]]) -> float | None:
+    if {int(row["label"]) for row in subset} != {0, 1}:
+        return None
+    return round(
+        binary_metrics(
+            [int(row["label"]) for row in subset],
+            [float(row["_logit"]) for row in subset],
+        )["roc_auc"],
+        3,
+    )
+
+
 @torch.no_grad()
 def run_inference(experiment_name: str) -> Path:
     requested_world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -124,7 +136,6 @@ def run_inference(experiment_name: str) -> Path:
 
         output_path = experiment.prediction_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        labels_available = all(int(row["label"]) in {0, 1} for row in rows)
         # Exact challenge submission columns. Labels and paths stay internal so
         # a labeled local test set can be scored without polluting submission.
         fieldnames = ["image_name", "pred"]
@@ -133,34 +144,13 @@ def run_inference(experiment_name: str) -> Path:
             writer.writeheader()
             writer.writerows(rows)
 
-        summary: dict[str, Any] = {
-            "event": "inference_complete",
-            "experiment": experiment.name,
-            "checkpoint": str(experiment.best_checkpoint_path),
-            "output": str(output_path),
-            "samples": len(rows),
-            "precision": "fp32_strict_no_tf32",
-            "positive_class": "AI-generated (label 1)",
+        clean_rows = [row for row in rows if int(row["is_distorted"]) == 0]
+        distorted_rows = [row for row in rows if int(row["is_distorted"]) == 1]
+        summary = {
+            "roc_auc_all": _rounded_roc_auc(rows),
+            "roc_auc_clean": _rounded_roc_auc(clean_rows),
+            "roc_auc_distorted": _rounded_roc_auc(distorted_rows),
         }
-        if labels_available and {int(row["label"]) for row in rows} == {0, 1}:
-            summary["metrics"] = binary_metrics(
-                [int(row["label"]) for row in rows],
-                [float(row["_logit"]) for row in rows],
-            )
-            clean_rows = [row for row in rows if int(row["is_distorted"]) == 0]
-            distorted_rows = [row for row in rows if int(row["is_distorted"]) == 1]
-            if {int(row["label"]) for row in clean_rows} == {0, 1}:
-                summary["clean_metrics"] = binary_metrics(
-                    [int(row["label"]) for row in clean_rows],
-                    [float(row["_logit"]) for row in clean_rows],
-                )
-                summary["clean_samples"] = len(clean_rows)
-            if {int(row["label"]) for row in distorted_rows} == {0, 1}:
-                summary["distorted_metrics"] = binary_metrics(
-                    [int(row["label"]) for row in distorted_rows],
-                    [float(row["_logit"]) for row in distorted_rows],
-                )
-                summary["distorted_samples"] = len(distorted_rows)
         print(json.dumps(summary, ensure_ascii=False))
         return output_path
     finally:

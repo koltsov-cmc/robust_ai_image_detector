@@ -61,10 +61,29 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _round_log_floats(value: Any, *, key: str | None = None) -> Any:
+    """Keep training logs compact without changing internal calculations."""
+    if isinstance(value, dict):
+        return {
+            item_key: _round_log_floats(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+            if item_key != "balanced_accuracy_at_0.5"
+        }
+    if isinstance(value, list):
+        return [_round_log_floats(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_round_log_floats(item) for item in value)
+    if isinstance(value, float):
+        if key == "learning_rate":
+            return float(f"{value:.3g}")
+        return round(value, 3)
+    return value
+
+
 def _write_status(path: Path, payload: dict[str, Any]) -> None:
     temporary_path = path.with_suffix(".json.tmp")
     with temporary_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        json.dump(_round_log_floats(payload), handle, ensure_ascii=False, indent=2)
         handle.write("\n")
     temporary_path.replace(path)
 
@@ -331,7 +350,7 @@ def run_training(experiment_name: str) -> None:
 
         print(
             json.dumps(
-                {
+                _round_log_floats({
                     "event": "setup",
                     "experiment": experiment.name,
                     "device": str(environment.device),
@@ -339,7 +358,6 @@ def run_training(experiment_name: str) -> None:
                     "augmentation_mode": experiment.augmentation_mode,
                     "max_epochs": experiment.max_epochs,
                     "early_stopping_patience": experiment.early_stopping_patience,
-                    "steps_per_epoch": len(train_loader),
                     "trainable_parameters": sum(parameter.numel() for parameter in head_parameters),
                     "trainable_parameter_names": model.trainable_parameter_names(),
                     "distortion_operations": (
@@ -363,7 +381,7 @@ def run_training(experiment_name: str) -> None:
                         }
                     ),
                     **counts,
-                },
+                }),
                 ensure_ascii=False,
             )
         )
@@ -404,9 +422,6 @@ def run_training(experiment_name: str) -> None:
                 ):
                     progress_measured_at = time.perf_counter()
                     epoch_elapsed_seconds = progress_measured_at - epoch_started_at
-                    current_samples_per_second = (
-                        local_sample_count / max(epoch_elapsed_seconds, 1.0e-9)
-                    )
                     estimated_epoch_seconds = (
                         epoch_elapsed_seconds * len(train_loader) / step_in_epoch
                     )
@@ -423,23 +438,21 @@ def run_training(experiment_name: str) -> None:
                     )
                     print(
                         json.dumps(
-                            {
+                            _round_log_floats({
                                 "event": "train_step",
                                 "epoch": epoch + 1,
                                 "step_in_epoch": step_in_epoch,
-                                "steps_per_epoch": len(train_loader),
                                 "loss": float(loss.detach().item()),
                                 "learning_rate": optimizer.param_groups[0]["lr"],
-                                "train_samples_per_second": current_samples_per_second,
                                 "estimated_epoch_duration": _format_duration(
                                     estimated_epoch_seconds
                                 ),
                                 "epoch_eta": _format_duration(epoch_eta_seconds),
-                                "estimated_full_training_duration": _format_duration(
+                                "estimated_training_time": _format_duration(
                                     estimated_full_training_seconds
                                 ),
-                                "training_eta": _format_duration(training_eta_seconds),
-                            },
+                                "remaining_time": _format_duration(training_eta_seconds),
+                            }),
                             ensure_ascii=False,
                         )
                     )
@@ -450,7 +463,6 @@ def run_training(experiment_name: str) -> None:
             improved, should_stop = early_stopping.update(current_roc_auc)
 
             epoch_seconds = time.perf_counter() - epoch_started_at
-            samples_per_second = local_sample_count / max(epoch_seconds, 1.0e-9)
             completed_epochs = epoch + 1
             epoch_record = {
                 "epoch": completed_epochs,
@@ -458,16 +470,21 @@ def run_training(experiment_name: str) -> None:
                 "train_loss": train_loss,
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "epoch_seconds": epoch_seconds,
-                "train_samples_per_second": samples_per_second,
                 "validation": validation_metrics,
                 "best_roc_auc": early_stopping.best,
                 "improved": improved,
                 "epochs_without_improvement": early_stopping.epochs_without_improvement,
                 "early_stop": should_stop,
             }
-            print(json.dumps({"event": "epoch_end", **epoch_record}, ensure_ascii=False))
+            logged_epoch_record = _round_log_floats(epoch_record)
+            print(
+                json.dumps(
+                    {"event": "epoch_end", **logged_epoch_record},
+                    ensure_ascii=False,
+                )
+            )
             with history_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(epoch_record, ensure_ascii=False) + "\n")
+                handle.write(json.dumps(logged_epoch_record, ensure_ascii=False) + "\n")
 
             payload = _checkpoint_payload(
                 model,
@@ -487,7 +504,7 @@ def run_training(experiment_name: str) -> None:
             if should_stop:
                 print(
                     json.dumps(
-                        {
+                        _round_log_floats({
                             "event": "early_stopping",
                             "epoch": completed_epochs,
                             "reason": (
@@ -495,7 +512,7 @@ def run_training(experiment_name: str) -> None:
                                 f"{experiment.early_stopping_patience} consecutive epochs."
                             ),
                             "best_roc_auc": early_stopping.best,
-                        },
+                        }),
                         ensure_ascii=False,
                     )
                 )
@@ -503,13 +520,13 @@ def run_training(experiment_name: str) -> None:
 
         print(
             json.dumps(
-                {
+                _round_log_floats({
                     "event": "training_complete",
                     "experiment": experiment.name,
                     "completed_epochs": completed_epochs,
                     "best_roc_auc": early_stopping.best,
                     "best_checkpoint": str(experiment.best_checkpoint_path),
-                },
+                }),
                 ensure_ascii=False,
             )
         )

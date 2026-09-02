@@ -279,7 +279,9 @@ def _load_ntire_test(
     class_mapping: dict[str, int],
     require_labels: bool,
 ) -> list[ImageSample]:
-    image_directory = _resolve_relative(root, split_spec.get("directory", "test/test"))
+    image_directory = _resolve_relative(
+        root, split_spec.get("directory", "test/test_images")
+    )
     if not image_directory.is_dir():
         raise FileNotFoundError(f"NTIRE test image directory does not exist: {image_directory}")
 
