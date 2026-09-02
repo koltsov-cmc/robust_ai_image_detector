@@ -1,0 +1,65 @@
+# Fixed config for: python train.py --experiment evaclipb_gap_distorted_only
+experiment: evaclipb_gap_distorted_only
+augmentation_mode: distorted_only
+seed: 3407
+
+model:
+  id: timm/eva02_base_patch16_clip_224.merged2b_s8b_b131k
+  local_dir: pretrained/eva02_clip_b16
+  cache_dir: null
+
+preprocessing:
+  image_size: 384
+
+dataloader:
+  batch_size: 64
+  num_workers: 4
+
+training:
+  max_epochs: 12
+  max_grad_norm: 1.0
+  log_interval_steps: 100
+  optimizer:
+    name: adamw
+    learning_rate: 1.0e-3
+    weight_decay: 0.01
+  scheduler:
+    name: cosine_with_warmup
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.01
+  early_stopping:
+    metric: clean_validation_roc_auc
+    mode: max
+    patience: 3
+
+distortions:
+  min_operations: 1
+  max_operations: 3
+  severity_min: 1
+  severity_max: 5
+  sample_without_replacement: true
+  operations:
+    - jpeg
+    - gaussian_blur
+    - motion_blur
+    - gaussian_noise
+    - brightness_shift
+    - saturation_shift
+    - downsample_upscale
+    - random_crop_resize
+
+  # jpeg_ai is intentionally NOT listed under operations yet. Its integration
+  # is retained below for a later experiment with the real reference software.
+  jpeg_ai_backend:
+    repository_env: JPEG_AI_REPOSITORY
+    python_executable_env: JPEG_AI_PYTHON
+    profile: base
+    tools_on: false
+    timeout_seconds: 600
+
+    # All DataLoader workers share one lock because the codec may also use the
+    # selected GPU. This prevents concurrent JPEG AI subprocesses from causing
+    # GPU-memory spikes or corrupting throughput measurements.
+    lock_path_env: JPEG_AI_LOCK_PATH
+    lock_path: /tmp/ntire_jpeg_ai_gpu5.lock
+    lock_timeout_seconds: 7200
