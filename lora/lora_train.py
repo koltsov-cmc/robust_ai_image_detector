@@ -591,15 +591,31 @@ def main() -> None:
     summaries: list[dict[str, Any]] = []
     for adapter_name, operations in plan:
         adapter_dir = arguments.output_root / adapter_name
-        if (adapter_dir / "adapter_model.safetensors").is_file():
+        has_weights = (adapter_dir / "adapter_model.safetensors").is_file()
+        # metadata.json is written only after the epoch loop finishes, so it is
+        # the completion marker. Weights alone mean an interrupted run: they were
+        # saved on an improving epoch that was never followed by a clean exit.
+        is_complete = has_weights and (adapter_dir / "metadata.json").is_file()
+        if is_complete:
             if arguments.resume:
                 print(json.dumps({"event": "adapter_skipped", "adapter": adapter_name, "reason": "already trained"}))
                 continue
             if not arguments.overwrite:
                 raise FileExistsError(
-                    f"{adapter_dir} already holds a trained adapter. "
+                    f"{adapter_dir} already holds a completed adapter. "
                     "Pass --resume to skip it or --overwrite to retrain it."
                 )
+        elif has_weights:
+            print(
+                json.dumps(
+                    {
+                        "event": "adapter_incomplete",
+                        "adapter": adapter_name,
+                        "reason": "weights exist but metadata.json does not; the previous run was interrupted",
+                        "action": "retraining from scratch",
+                    }
+                )
+            )
         summaries.append(
             train_one_adapter(
                 adapter_name=adapter_name,
