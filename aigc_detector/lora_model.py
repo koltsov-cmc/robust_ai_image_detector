@@ -57,6 +57,43 @@ class EvaClipLoRAClassifier(EvaClipGAPClassifier):
         # No torch.no_grad() here: the gradient has to reach the LoRA matrices.
         return self.backbone.forward_features(pixel_values)
 
+    def extract_gap_features(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """GAP over patch tokens, with the trunk call left inside the autograd graph.
+
+        This is a deliberate full override rather than a hook into the parent
+        implementation. The gradient path then depends on this class alone, so a
+        stale or out-of-sync copy of :mod:`aigc_detector.model` cannot silently
+        reintroduce a ``torch.no_grad()`` around the trunk and leave the adapter
+        untrainable.
+        """
+        height, width = pixel_values.shape[-2:]
+        patch_height, patch_width = self.patch_size
+        if height % patch_height != 0 or width % patch_width != 0:
+            raise ValueError(
+                f"Input spatial size {(height, width)} must be divisible by "
+                f"patch size {self.patch_size}."
+            )
+
+        tokens = self.backbone.forward_features(pixel_values)
+
+        expected_patch_count = (height // patch_height) * (width // patch_width)
+        expected_sequence_length = self.num_prefix_tokens + expected_patch_count
+        if not isinstance(tokens, torch.Tensor) or tokens.ndim != 3:
+            shape = tuple(tokens.shape) if isinstance(tokens, torch.Tensor) else type(tokens).__name__
+            raise RuntimeError(
+                "Unexpected EVA-CLIP visual output: expected a [batch, tokens, channels] "
+                f"tensor, got {shape}."
+            )
+        if tokens.shape[1] != expected_sequence_length or tokens.shape[2] != self.hidden_size:
+            raise RuntimeError(
+                "Unexpected EVA-CLIP token layout: "
+                f"got {tuple(tokens.shape)}, expected sequence length {expected_sequence_length} "
+                f"({self.num_prefix_tokens} prefix + {expected_patch_count} patches) "
+                f"and hidden size {self.hidden_size}."
+            )
+
+        return tokens[:, self.num_prefix_tokens :, :].mean(dim=1)
+
 
 def load_detector_checkpoint(path: str | Path) -> dict[str, Any]:
     """Read a ``runs/<experiment>/best.pt`` checkpoint written by the native pipeline."""

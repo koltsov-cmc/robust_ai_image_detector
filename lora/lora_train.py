@@ -242,8 +242,10 @@ def assert_gradient_flows(
     if not logits.requires_grad or logits.grad_fn is None:
         raise RuntimeError(
             "The adapted model produced a logit with no gradient graph, so nothing can train. "
-            "The LoRA layers are attached but not routed through the forward pass. "
-            "Check the installed peft version against requirements.txt."
+            "Either the LoRA layers are attached but not routed through the forward pass, or the "
+            "trunk is still being run under torch.no_grad(). Check that aigc_detector/ and lora/ "
+            "come from the same revision, delete stale __pycache__ directories, and verify the "
+            "installed peft version against requirements.txt."
         )
 
 
