@@ -13,10 +13,10 @@ preprocessing:
 
 dataloader:
   batch_size: 64
-  num_workers: 8
+  num_workers: 4
 
 training:
-  max_epochs: 25
+  max_epochs: 12
   max_grad_norm: 1.0
   log_interval_steps: 100
   optimizer:
@@ -30,7 +30,7 @@ training:
   early_stopping:
     metric: clean_validation_roc_auc
     mode: max
-    patience: 5
+    patience: 3
 
 distortions:
   min_operations: 1

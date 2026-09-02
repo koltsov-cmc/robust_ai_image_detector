@@ -249,13 +249,17 @@ def _motion_blur(image: np.ndarray, kernel_size: int, direction: str) -> np.ndar
     dy, dx = vectors[direction]
     half = kernel_size // 2
     height, width = image.shape[:2]
-    padded = np.pad(image.astype(np.float64), ((half, half), (half, half), (0, 0)), mode="edge")
-    accumulated = np.zeros_like(image, dtype=np.float64)
+    # Float32 is sufficient for the largest possible sum (15 * 255) and halves
+    # both memory traffic and temporary-buffer size compared with float64.
+    source = image.astype(np.float32)
+    padded = np.pad(source, ((half, half), (half, half), (0, 0)), mode="edge")
+    accumulated = np.zeros_like(source)
     for offset in range(-half, half + 1):
         top = half + dy * offset
         left = half + dx * offset
         accumulated += padded[top : top + height, left : left + width]
-    return np.uint8(np.clip(np.rint(accumulated / kernel_size), 0, 255))
+    accumulated *= np.float32(1.0 / kernel_size)
+    return np.uint8(np.clip(np.rint(accumulated), 0, 255))
 
 
 def _base_metadata(name: str, severity: int, seed: int, parameters: Mapping[str, Any]) -> dict[str, Any]:
@@ -309,8 +313,13 @@ def apply_distortion(
         parameters = {**declared, "direction": direction}
 
     elif distortion_type == "gaussian_noise":
-        sigma = float(declared["sigma"])
-        noisy = image.astype(np.float64) + rng.normal(0.0, sigma, size=image.shape)
+        sigma = np.float32(declared["sigma"])
+        # Generator.standard_normal supports native float32 output, avoiding
+        # two full-resolution float64 arrays for every noisy image.
+        noise = rng.standard_normal(size=image.shape, dtype=np.float32)
+        noise *= sigma
+        noisy = image.astype(np.float32)
+        noisy += noise
         output = np.uint8(np.clip(np.rint(noisy), 0, 255))
         parameters = {**declared, "noise_seed": seed}
 

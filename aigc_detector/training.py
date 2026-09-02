@@ -54,6 +54,13 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, round(float(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def _write_status(path: Path, payload: dict[str, Any]) -> None:
     temporary_path = path.with_suffix(".json.tmp")
     with temporary_path.open("w", encoding="utf-8") as handle:
@@ -340,6 +347,11 @@ def run_training(experiment_name: str) -> None:
                         if distortion_pipeline is not None
                         else []
                     ),
+                    "distortion_stage": (
+                        "after_bicubic_squish_to_model_input"
+                        if distortion_pipeline is not None
+                        else None
+                    ),
                     "jpeg_ai_backend": (
                         None
                         if distortion_pipeline is None
@@ -368,7 +380,7 @@ def run_training(experiment_name: str) -> None:
             local_loss_sum = 0.0
             local_sample_count = 0
 
-            for batch in train_loader:
+            for step_in_epoch, batch in enumerate(train_loader, start=1):
                 pixel_values = batch["pixel_values"].to(environment.device, non_blocking=True)
                 labels = batch["label"].to(environment.device, non_blocking=True)
 
@@ -390,14 +402,43 @@ def run_training(experiment_name: str) -> None:
                     experiment.log_interval_steps > 0
                     and global_step % experiment.log_interval_steps == 0
                 ):
+                    progress_measured_at = time.perf_counter()
+                    epoch_elapsed_seconds = progress_measured_at - epoch_started_at
+                    current_samples_per_second = (
+                        local_sample_count / max(epoch_elapsed_seconds, 1.0e-9)
+                    )
+                    estimated_epoch_seconds = (
+                        epoch_elapsed_seconds * len(train_loader) / step_in_epoch
+                    )
+                    epoch_eta_seconds = max(
+                        0.0, estimated_epoch_seconds - epoch_elapsed_seconds
+                    )
+                    remaining_full_epochs = experiment.max_epochs - (epoch + 1)
+                    training_eta_seconds = (
+                        epoch_eta_seconds
+                        + remaining_full_epochs * estimated_epoch_seconds
+                    )
+                    estimated_full_training_seconds = (
+                        estimated_epoch_seconds * experiment.max_epochs
+                    )
                     print(
                         json.dumps(
                             {
                                 "event": "train_step",
                                 "epoch": epoch + 1,
-                                "global_step": global_step,
+                                "step_in_epoch": step_in_epoch,
+                                "steps_per_epoch": len(train_loader),
                                 "loss": float(loss.detach().item()),
                                 "learning_rate": optimizer.param_groups[0]["lr"],
+                                "train_samples_per_second": current_samples_per_second,
+                                "estimated_epoch_duration": _format_duration(
+                                    estimated_epoch_seconds
+                                ),
+                                "epoch_eta": _format_duration(epoch_eta_seconds),
+                                "estimated_full_training_duration": _format_duration(
+                                    estimated_full_training_seconds
+                                ),
+                                "training_eta": _format_duration(training_eta_seconds),
                             },
                             ensure_ascii=False,
                         )

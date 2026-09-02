@@ -597,13 +597,18 @@ class AIGCImageDataset(Dataset[dict[str, Any]]):
         except Exception as error:
             raise RuntimeError(f"Failed to read image at dataset index {index}: {sample.path}") from error
 
+        # All experimental distortions operate in model-input space.  Resizing
+        # first bounds their CPU and memory cost independently of the source
+        # image resolution and gives pixel-sized parameters (for example a
+        # 15-pixel motion-blur kernel) an unambiguous scale.
+        image = image.resize(
+            (self.image_width, self.image_height),
+            resample=Image.Resampling.BICUBIC,
+        )
         rng = self._rng_for_index(index)
         if self.distortion_pipeline is not None:
             image = self.distortion_pipeline(image, rng)
 
-        # This deterministic squish-to-square is common preprocessing, not one
-        # of the nine experimental distortions.
-        image = image.resize((self.image_width, self.image_height), resample=Image.Resampling.BICUBIC)
         array = np.asarray(image, dtype=np.float32).copy()
         pixel_values = torch.from_numpy(array).permute(2, 0, 1).div_(255.0)
         pixel_values = (pixel_values - self.mean) / self.std
