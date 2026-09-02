@@ -80,7 +80,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated subset of distortions for --mode per-distortion. Defaults to all working ones.",
     )
-    parser.add_argument("--backbone-local-dir", type=Path, default=PROJECT_ROOT / "pretrained" / "eva02_clip_b16")
+    parser.add_argument(
+        "--backbone-local-dir",
+        default=str(PROJECT_ROOT / "pretrained" / "eva02_clip_b16"),
+        help="Offline EVA-CLIP directory. Pass 'none' to download from the Hugging Face hub instead.",
+    )
     parser.add_argument("--backbone-cache-dir", type=Path, default=None)
 
     parser.add_argument("--lora-rank", type=int, default=8)
@@ -120,6 +124,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Skip adapters that already have saved weights.")
     parser.add_argument("--overwrite", action="store_true", help="Retrain adapters that already have saved weights.")
     return parser.parse_args()
+
+
+def resolve_backbone_local_dir(value: str | None) -> str | None:
+    """Allow --backbone-local-dir none to fall back to the Hugging Face hub."""
+    if value is None or str(value).strip().casefold() in {"", "none", "null", "hub"}:
+        return None
+    return str(Path(value).expanduser())
+
+
+def _peft_version() -> str:
+    import peft
+
+    return str(peft.__version__)
 
 
 def utc_now() -> str:
@@ -204,6 +221,32 @@ def autocast_context(precision: str, device: torch.device):
     return torch.autocast(device_type=device.type, enabled=False)
 
 
+def assert_gradient_flows(
+    model: nn.Module,
+    image_size: int,
+    device: torch.device,
+    precision: str,
+) -> None:
+    """Fail immediately if the forward pass builds no graph.
+
+    Without this, a trunk whose adapters are attached but not routed produces a
+    loss with no grad_fn, and the only symptom is an opaque autograd error on
+    the first backward call.
+    """
+    was_training = model.training
+    model.train()
+    probe = torch.zeros(1, 3, image_size, image_size, device=device)
+    with autocast_context(precision, device):
+        logits = model(probe)
+    model.train(was_training)
+    if not logits.requires_grad or logits.grad_fn is None:
+        raise RuntimeError(
+            "The adapted model produced a logit with no gradient graph, so nothing can train. "
+            "The LoRA layers are attached but not routed through the forward pass. "
+            "Check the installed peft version against requirements.txt."
+        )
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -243,20 +286,10 @@ def train_one_adapter(
     # rebuilding is far cheaper than reasoning about leftover adapter state.
     model, preprocessing = build_lora_detector(
         checkpoint,
-        local_dir=arguments.backbone_local_dir,
+        local_dir=resolve_backbone_local_dir(arguments.backbone_local_dir),
         cache_dir=arguments.backbone_cache_dir,
         freeze_head=True,
     )
-    peft_model, report = attach_lora(
-        model,
-        rank=arguments.lora_rank,
-        alpha=arguments.lora_alpha,
-        dropout=arguments.lora_dropout,
-        target_regex=arguments.target_regex,
-    )
-    print_lora_report(report)
-    if report["head_trainable"]:
-        raise RuntimeError("The detector head must stay frozen while a LoRA adapter trains.")
     model.to(device)
 
     pipeline = build_pipeline(operations, arguments)
@@ -281,14 +314,28 @@ def train_one_adapter(
     distorted_loader = make_loader(distorted_validation, arguments=arguments, device=device, shuffle=False)
     clean_loader = make_loader(clean_validation, arguments=arguments, device=device, shuffle=False)
 
-    # Baseline = the same head and trunk with the adapter switched off. It says
-    # whether the adapter earned its keep, and it is one extra pass to get.
-    with peft_model.disable_adapter():
-        baseline = {
-            "distorted": evaluate(model, distorted_loader, device, arguments.precision),
-            "clean": evaluate(model, clean_loader, device, arguments.precision),
-        }
+    # Baseline = this same head and trunk before any adapter exists, which is
+    # exactly the released detector. Measuring it here rather than through
+    # peft's disable_adapter() context means no adapter state has to be torn
+    # down and restored around it.
+    baseline = {
+        "distorted": evaluate(model, distorted_loader, device, arguments.precision),
+        "clean": evaluate(model, clean_loader, device, arguments.precision),
+    }
     print(json.dumps({"event": "baseline", "adapter": adapter_name, **baseline}, ensure_ascii=False))
+
+    peft_model, report = attach_lora(
+        model,
+        rank=arguments.lora_rank,
+        alpha=arguments.lora_alpha,
+        dropout=arguments.lora_dropout,
+        target_regex=arguments.target_regex,
+    )
+    print_lora_report(report)
+    if report["head_trainable"]:
+        raise RuntimeError("The detector head must stay frozen while a LoRA adapter trains.")
+    model.to(device)
+    assert_gradient_flows(model, int(preprocessing["image_size"]), device, arguments.precision)
 
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = AdamW(trainable, lr=arguments.learning_rate, weight_decay=arguments.weight_decay)
@@ -532,6 +579,8 @@ def main() -> None:
                 "device": str(environment.device),
                 "device_name": torch.cuda.get_device_name(environment.device),
                 "precision": arguments.precision,
+                "torch": torch.__version__,
+                "peft": _peft_version(),
             },
             ensure_ascii=False,
         )

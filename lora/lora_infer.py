@@ -73,7 +73,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated adapter subset for --mode ensemble. Defaults to all working distortions.",
     )
-    parser.add_argument("--backbone-local-dir", type=Path, default=PROJECT_ROOT / "pretrained" / "eva02_clip_b16")
+    parser.add_argument(
+        "--backbone-local-dir",
+        default=str(PROJECT_ROOT / "pretrained" / "eva02_clip_b16"),
+        help="Offline EVA-CLIP directory. Pass 'none' to download from the Hugging Face hub instead.",
+    )
     parser.add_argument("--backbone-cache-dir", type=Path, default=None)
     parser.add_argument("--threshold", type=float, default=0.5, help="Probability at or above which an image is fake.")
     parser.add_argument("--batch-size", type=int, default=64)
@@ -92,6 +96,13 @@ def parse_args() -> argparse.Namespace:
     if not 0.0 < arguments.threshold < 1.0:
         parser.error("--threshold must lie strictly between 0 and 1.")
     return arguments
+
+
+def resolve_backbone_local_dir(value: str | None) -> str | None:
+    """Allow --backbone-local-dir none to fall back to the Hugging Face hub."""
+    if value is None or str(value).strip().casefold() in {"", "none", "null", "hub"}:
+        return None
+    return str(Path(value).expanduser())
 
 
 def resolve_adapters(arguments: argparse.Namespace) -> dict[str, Path]:
@@ -257,12 +268,23 @@ def collect_scores(
     with_baseline: bool,
 ) -> dict[str, np.ndarray]:
     scores: dict[str, np.ndarray] = {}
-    if with_baseline:
-        with peft_model.disable_adapter():
-            scores[BASELINE_NAME] = score_dataset(model, loader, device, precision)
     for name in adapters:
         peft_model.set_adapter(name)
         scores[name] = score_dataset(model, loader, device, precision)
+
+    # The baseline pass runs last on purpose. It is the only pass that has to
+    # tear the adapters down, so nothing that follows depends on that state
+    # being restored correctly.
+    if with_baseline:
+        with peft_model.disable_adapter():
+            scores[BASELINE_NAME] = score_dataset(model, loader, device, precision)
+        inert = [name for name in adapters if np.array_equal(scores[name], scores[BASELINE_NAME])]
+        if inert:
+            raise RuntimeError(
+                f"These adapters scored identically to the detector with no adapter attached: {inert}. "
+                "They are attached but not routed through the forward pass, so their numbers are "
+                "meaningless. Check the installed peft version against requirements.txt."
+            )
     return scores
 
 
@@ -453,7 +475,7 @@ def main() -> None:
 
     model, preprocessing = build_lora_detector(
         checkpoint,
-        local_dir=arguments.backbone_local_dir,
+        local_dir=resolve_backbone_local_dir(arguments.backbone_local_dir),
         cache_dir=arguments.backbone_cache_dir,
         freeze_head=True,
     )
