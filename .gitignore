@@ -3,3 +3,10 @@ ntire/
 *venv/
 *.venv/
 *weights/
+pretrained
+runs
+*__pycache__/
+kirill/baselines/
+kirill/baselines_hf/vincentlc/submission/results/
+kirill/baselines_hf/vincentlc/submission/src/model.py.bak
+predictions/

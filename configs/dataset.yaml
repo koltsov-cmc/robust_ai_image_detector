@@ -1,0 +1,36 @@
+# NTIRE 2026 Robust AI-Generated Image Detection in the Wild.
+# This file is inside <project>/configs, while the real dataset is expected at
+# <project>/ntire on the compute machine.
+format: ntire_2026
+root: ../ntire
+train_directory: train
+shard_glob: shard_*
+train_image_column: image_name
+train_label_column: label
+
+# Setting this to true checks every image path before loading EVA-CLIP. It is
+# safer but can be slow on a network filesystem with hundreds of thousands of
+# files. Missing files are still reported when a sample is read.
+verify_files: false
+
+classes:
+  real: 0
+  ai_generated: 1
+
+splits:
+  train:
+    # Use every extracted shard directory except the shard reserved below.
+    # ZIP files next to shard directories are ignored.
+    shards: all_except_validation
+  validation:
+    # A disjoint clean holdout for model selection and early stopping.
+    shards: [5]
+    max_samples: 5000
+    sampling: balanced
+    seed: 3407
+  test:
+    directory: test/test_images
+    labels_manifest: test/test_labels.csv
+    labels_image_column: image_name
+    label_column: label
+    default_extension: .jpg

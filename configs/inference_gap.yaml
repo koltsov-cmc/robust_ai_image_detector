@@ -1,0 +1,5 @@
+# Shared inference settings. The experiment name determines the fixed checkpoint
+# runs/<experiment>/best.pt and output predictions/<experiment>.csv.
+dataloader:
+  batch_size: 64
+  num_workers: 4
