@@ -2,8 +2,14 @@
 
 Two modes:
 
-    --mode all        one adapter, the one trained on every distortion
-    --mode ensemble   every per-distortion adapter in turn, then their mean
+    --mode all        one adapter, by default the one trained on every distortion
+    --mode ensemble   several adapters in turn, then their mean
+
+Which adapters run is free to choose with --adapters:
+
+    --adapters jpeg,motion_blur     only these two
+    --adapters all,jpeg             mix the all-distortions adapter with one more
+    --list-adapters                 show what is trained and exit
 
 Two inputs:
 
@@ -62,16 +68,31 @@ BASELINE_NAME = "__baseline__"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", required=True, choices=("all", "ensemble"))
-    parser.add_argument("--head", required=True, type=Path, help="Detector checkpoint (best.pt) providing the head.")
+    parser.add_argument("--mode", choices=("all", "ensemble"), default=None)
+    parser.add_argument("--head", type=Path, default=None, help="Detector checkpoint (best.pt) providing the head.")
     parser.add_argument("--adapters-root", type=Path, default=DEFAULT_ADAPTERS_ROOT)
     parser.add_argument("--image", type=Path, default=None, help="Score a single image instead of a split.")
     parser.add_argument("--split", default=None, help="Dataset split to score, for example 'test'.")
     parser.add_argument("--dataset-config", type=Path, default=DEFAULT_DATASET_CONFIG)
     parser.add_argument(
+        "--adapters",
+        default=None,
+        help=(
+            "Comma-separated adapter names to run, in the order given, for example "
+            "'jpeg,motion_blur' or 'all,jpeg'. Any directory under --adapters-root is "
+            "accepted, so adapters for future distortions need no code change. "
+            "Defaults: --mode all runs 'all'; --mode ensemble runs every working distortion."
+        ),
+    )
+    parser.add_argument(
         "--distortions",
         default=None,
-        help="Comma-separated adapter subset for --mode ensemble. Defaults to all working distortions.",
+        help="Deprecated alias for --adapters, kept so existing commands keep working.",
+    )
+    parser.add_argument(
+        "--list-adapters",
+        action="store_true",
+        help="Print the trained adapters under --adapters-root and exit.",
     )
     parser.add_argument(
         "--backbone-local-dir",
@@ -91,6 +112,14 @@ def parse_args() -> argparse.Namespace:
         help="Skip the adapter-disabled reference pass over a split.",
     )
     arguments = parser.parse_args()
+    if arguments.list_adapters:
+        return arguments
+    if arguments.mode is None:
+        parser.error("--mode is required.")
+    if arguments.head is None:
+        parser.error("--head is required.")
+    if arguments.adapters and arguments.distortions:
+        parser.error("Pass either --adapters or its deprecated alias --distortions, not both.")
     if (arguments.image is None) == (arguments.split is None):
         parser.error("Pass exactly one of --image or --split.")
     if not 0.0 < arguments.threshold < 1.0:
@@ -105,31 +134,68 @@ def resolve_backbone_local_dir(value: str | None) -> str | None:
     return str(Path(value).expanduser())
 
 
+def discover_adapters(adapters_root: Path) -> dict[str, Path]:
+    """Every trained adapter directly under ``adapters_root``, in sorted order."""
+    if not adapters_root.is_dir():
+        return {}
+    return {
+        directory.name: directory.resolve()
+        for directory in sorted(adapters_root.iterdir())
+        if directory.is_dir() and (directory / "adapter_model.safetensors").is_file()
+    }
+
+
+def print_adapter_listing(adapters_root: Path) -> None:
+    available = discover_adapters(adapters_root)
+    print(f"adapters root: {adapters_root.resolve()}")
+    if not available:
+        print("  (none trained yet)")
+        return
+    width = max(len(name) for name in available)
+    for name, directory in available.items():
+        metadata_path = directory / "metadata.json"
+        if metadata_path.is_file():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            operations = ",".join(metadata.get("operations", [])) or "?"
+            detail = (
+                f"epochs={metadata.get('training', {}).get('epochs_run', '?')} "
+                f"best_epoch={metadata.get('best_epoch', '?')} "
+                f"operations={operations}"
+            )
+        else:
+            detail = "INCOMPLETE (no metadata.json; the training run was interrupted)"
+        print(f"  {name:<{width}}  {detail}")
+
+
 def resolve_adapters(arguments: argparse.Namespace) -> dict[str, Path]:
-    if arguments.mode == "all":
+    available = discover_adapters(arguments.adapters_root)
+    selection = arguments.adapters or arguments.distortions
+
+    if selection:
+        names = [name.strip() for name in selection.split(",") if name.strip()]
+        if not names:
+            raise ValueError("--adapters was given but lists no adapter names.")
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"--adapters lists the same adapter more than once: {duplicates}.")
+        if arguments.mode == "all" and len(names) != 1:
+            raise ValueError(
+                f"--mode all scores exactly one adapter, but {len(names)} were requested: {names}. "
+                "Use --mode ensemble to score several and average them."
+            )
+    elif arguments.mode == "all":
         names = [ALL_ADAPTER_NAME]
-    elif arguments.distortions:
-        names = [name.strip() for name in arguments.distortions.split(",") if name.strip()]
-        unknown = sorted(set(names) - set(BUILTIN_DISTORTION_NAMES))
-        if unknown:
-            raise ValueError(f"Unknown or non-working distortions: {unknown}.")
     else:
         names = list(BUILTIN_DISTORTION_NAMES)
 
-    adapters: dict[str, Path] = {}
-    missing: list[str] = []
-    for name in names:
-        directory = (arguments.adapters_root / name).resolve()
-        if (directory / "adapter_model.safetensors").is_file():
-            adapters[name] = directory
-        else:
-            missing.append(str(directory))
+    missing = [name for name in names if name not in available]
     if missing:
         raise FileNotFoundError(
-            "These adapters have not been trained yet:\n  " + "\n  ".join(missing)
-            + "\nTrain them with lora/lora_train.py."
+            f"These adapters are not trained under {arguments.adapters_root.resolve()}: {missing}.\n"
+            f"Available: {sorted(available) or 'none'}.\n"
+            "Train them with lora/lora_train.py, or list what exists with --list-adapters."
         )
-    return adapters
+    return {name: available[name] for name in names}
 
 
 def check_adapter_compatibility(adapters: dict[str, Path], checkpoint: dict[str, Any], head_path: Path) -> None:
@@ -465,6 +531,9 @@ def print_metrics_table(summary: dict[str, Any]) -> None:
 
 def main() -> None:
     arguments = parse_args()
+    if arguments.list_adapters:
+        print_adapter_listing(arguments.adapters_root)
+        return
     environment = initialize_distributed()
     _configure_strict_fp32()
     set_global_seed(arguments.seed, deterministic=False)
