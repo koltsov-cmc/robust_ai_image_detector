@@ -58,3 +58,68 @@ Verification status: the eight built-in distortions and the JPEG AI command
 contract were tested locally. A real JPEG AI encode/decode was not run in the
 current environment because the official runtime and model files were not
 installed.
+
+## LoRA adapters
+
+`lora/` trains one LoRA adapter per distortion plus one adapter over all of
+them, on top of an already trained detector. The detector head is loaded from a
+`best.pt` checkpoint and frozen; only the LoRA matrices inside the visual trunk
+are trained. Because LoRA is initialised to zero, the adapted model starts out
+bit-for-bit identical to the base detector, and an adapter can be detached at
+any time to get the base detector back.
+
+Both released detector variants share the same frozen EVA02-CLIP-B/16 trunk and
+differ only in their 769-parameter head, so any adapter attaches to either one.
+Whether it *helps* the variant it was not trained against is an empirical
+question: pass a different `--head` to measure it.
+
+### 1. Build the training subset
+
+15 000 images are drawn from shard_5, which the detector never trained on. The
+images used by the native validation split are excluded first, so early stopping
+never sees a training image.
+
+```bash
+python3 lora/make_subset.py            # writes lora/lora_train_subset.csv
+```
+
+### 2. Train
+
+```bash
+HEAD=/data2/aidetection/runs/evaclipb_gap_distorted_only/best.pt
+
+# one adapter over every distortion
+python3 lora/lora_train.py --mode all --head "$HEAD"
+
+# one adapter per distortion, trained back to back
+python3 lora/lora_train.py --mode per-distortion --head "$HEAD"
+```
+
+Each adapter lands in `runs_lora/<name>/` as `adapter_config.json` +
+`adapter_model.safetensors`, next to a `metadata.json` recording the head it was
+paired with, the distortion policy, and its scores. Every run first prints where
+LoRA actually attached and refuses to continue if the target regex matched
+nothing.
+
+The distortion list comes from `augmentations.BUILTIN_DISTORTION_NAMES`, so a
+newly working distortion becomes another adapter with no code change. Use
+`--distortions a,b,c` to train a subset, `--resume` to continue an interrupted
+nine-adapter run, and `--precision bf16` to trade exact FP32 parity for speed.
+
+### 3. Run inference
+
+```bash
+# single image, all eight per-distortion adapters, then their mean
+python3 lora/lora_infer.py --mode ensemble --image sample.jpg --head "$HEAD"
+
+# whole test split, single adapter, ROC-AUC and accuracy over
+# all / clean / distorted images
+python3 lora/lora_infer.py --mode all --split test --head "$HEAD"
+
+# whole test split, per-adapter and ensemble metrics, predictions to CSV
+python3 lora/lora_infer.py --mode ensemble --split test --head "$HEAD" \
+    --output predictions/lora_ensemble.csv
+```
+
+Split runs also score the detector with the adapter switched off, so every
+number has a reference point. Pass `--no-baseline` to skip that pass.

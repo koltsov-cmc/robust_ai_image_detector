@@ -1,8 +1,8 @@
 # NTIRE 2026 Robust AI-Generated Image Detection in the Wild.
-# This file is inside <project>/configs, while the real dataset is expected at
-# <project>/ntire on the compute machine.
+# This file is inside <project>/configs, while the real dataset lives at an
+# absolute path on the compute machine.
 format: ntire_2026
-root: ../ntire
+root: /data2/aidetection/ntire
 train_directory: train
 shard_glob: shard_*
 train_image_column: image_name
@@ -29,8 +29,8 @@ splits:
     sampling: balanced
     seed: 3407
   test:
-    directory: test/test
-    images_manifest: test/test_images_test.csv
+    directory: test/test_images
+    images_manifest: test/test_labels.csv
     image_column: image_name
     labels_manifest: test/test_labels.csv
     labels_image_column: image_name

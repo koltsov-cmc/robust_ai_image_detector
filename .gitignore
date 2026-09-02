@@ -3,3 +3,7 @@ ntire/
 *venv/
 *.venv/
 *weights/
+__pycache__/
+runs/
+predictions/
+runs_lora/
