@@ -43,7 +43,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from augmentations import BUILTIN_DISTORTION_NAMES  # noqa: E402
 from aigc_detector.augmentation_pipeline import DistortionPipeline, DistortionPolicy  # noqa: E402
-from aigc_detector.data import AIGCImageDataset, ImageSample, load_samples, seed_worker  # noqa: E402
+from aigc_detector.config import load_yaml  # noqa: E402
+from aigc_detector.data import (  # noqa: E402
+    AIGCImageDataset,
+    ImageSample,
+    _load_ntire_shards,
+    _resolve_relative,
+    load_samples,
+    seed_worker,
+)
 from aigc_detector.distributed import initialize_distributed, set_global_seed  # noqa: E402
 from aigc_detector.lora_model import (  # noqa: E402
     LORA_TARGET_REGEX,
@@ -72,7 +80,21 @@ def parse_args() -> argparse.Namespace:
         help="'all' trains one adapter over every distortion; 'per-distortion' trains one adapter each.",
     )
     parser.add_argument("--head", required=True, type=Path, help="Detector checkpoint (best.pt) providing the frozen head.")
-    parser.add_argument("--subset", type=Path, default=DEFAULT_SUBSET)
+    parser.add_argument(
+        "--subset",
+        type=Path,
+        default=None,
+        help="Training manifest CSV. Defaults to lora/lora_train_subset.csv when --shards is not given.",
+    )
+    parser.add_argument(
+        "--shards",
+        default=None,
+        help=(
+            "Train on every image of these train shards instead of a subset CSV, for "
+            "example --shards 0,1,2,3,4,5 or --shards shard_0,shard_1. Images belonging "
+            "to the validation split are excluded automatically."
+        ),
+    )
     parser.add_argument("--dataset-config", type=Path, default=DEFAULT_DATASET_CONFIG)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
@@ -173,6 +195,47 @@ def load_subset_samples(path: Path) -> list[ImageSample]:
     if 0 not in labels or 1 not in labels:
         raise ValueError(f"{path} must contain both binary classes.")
     return samples
+
+
+def load_shard_samples(dataset_config_path: Path, shards: str) -> tuple[list[ImageSample], list[str]]:
+    """Load every labelled image of the requested train shards."""
+    config = load_yaml(dataset_config_path)
+    if config.get("format") != "ntire_2026":
+        raise ValueError(
+            f"{dataset_config_path} is not in the 'ntire_2026' format, so it has no shard directories."
+        )
+    root = _resolve_relative(Path(config["_config_dir"]), config.get("root", "../ntire"))
+    train_directory = _resolve_relative(root, config.get("train_directory", "train"))
+    if not train_directory.is_dir():
+        raise FileNotFoundError(f"Train directory does not exist: {train_directory}")
+
+    names: list[str] = []
+    for raw in shards.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        name = raw if raw.startswith("shard_") else f"shard_{raw}"
+        if name in names:
+            raise ValueError(f"--shards lists {name!r} more than once.")
+        names.append(name)
+    if not names:
+        raise ValueError("--shards was given but lists no shards.")
+
+    available = sorted(path.name for path in train_directory.glob("shard_*") if path.is_dir())
+    missing = [name for name in names if name not in available]
+    if missing:
+        raise FileNotFoundError(
+            f"These shards are not extracted under {train_directory}: {missing}. Available: {available}."
+        )
+
+    samples = _load_ntire_shards(
+        train_directory,
+        [train_directory / name for name in names],
+        image_column=str(config.get("train_image_column", "image_name")),
+        label_column=str(config.get("train_label_column", "label")),
+        class_mapping={str(key): int(value) for key, value in config.get("classes", {}).items()},
+    )
+    return samples, names
 
 
 def build_pipeline(operations: Sequence[str], arguments: argparse.Namespace) -> DistortionPipeline:
@@ -278,6 +341,7 @@ def train_one_adapter(
     checkpoint: dict[str, Any],
     train_samples: list[ImageSample],
     validation_samples: list[ImageSample],
+    train_source: dict[str, Any],
     device: torch.device,
 ) -> dict[str, Any]:
     output_dir = (arguments.output_root / adapter_name).resolve()
@@ -472,7 +536,7 @@ def train_one_adapter(
             "trainable_parameters": report["trainable_parameters"],
         },
         "training": {
-            "subset": str(Path(arguments.subset).resolve()),
+            "source": train_source,
             "train_samples": len(train_samples),
             "validation_samples": len(validation_samples),
             "epochs_configured": arguments.epochs,
@@ -553,13 +617,35 @@ def main() -> None:
     set_global_seed(arguments.seed, deterministic=False)
 
     checkpoint = load_detector_checkpoint(arguments.head)
-    train_samples = load_subset_samples(arguments.subset)
     validation_samples, _ = load_samples(arguments.dataset_config, "validation", require_labels=True)
     if arguments.validation_max_samples is not None:
         validation_samples = cap_validation(validation_samples, arguments.validation_max_samples)
+    validation_ids = {sample.sample_id for sample in validation_samples}
 
-    subset_ids = {sample.sample_id for sample in train_samples}
-    overlap = subset_ids & {sample.sample_id for sample in validation_samples}
+    if arguments.shards:
+        if arguments.subset is not None:
+            raise ValueError("Pass either --shards or --subset, not both.")
+        shard_samples, shard_names = load_shard_samples(arguments.dataset_config, arguments.shards)
+        # The validation split is carved out of the train shards, so training on
+        # whole shards has to drop those images or early stopping is meaningless.
+        train_samples = [
+            sample for sample in shard_samples if sample.sample_id not in validation_ids
+        ]
+        train_source = {
+            "kind": "shards",
+            "shards": shard_names,
+            "shard_total": len(shard_samples),
+            "validation_excluded": len(shard_samples) - len(train_samples),
+        }
+        labels = [int(sample.label) for sample in train_samples]
+        if 0 not in labels or 1 not in labels:
+            raise ValueError(f"Shards {shard_names} do not contain both binary classes.")
+    else:
+        subset_path = arguments.subset if arguments.subset is not None else DEFAULT_SUBSET
+        train_samples = load_subset_samples(subset_path)
+        train_source = {"kind": "subset", "path": str(Path(subset_path).resolve())}
+
+    overlap = {sample.sample_id for sample in train_samples} & validation_ids
     if overlap:
         raise RuntimeError(
             f"{len(overlap)} training images also appear in the validation split. "
@@ -576,6 +662,7 @@ def main() -> None:
                 "head": str(Path(arguments.head).resolve()),
                 "head_experiment": checkpoint.get("experiment"),
                 "image_size": int(checkpoint["preprocessing"]["image_size"]),
+                "train_source": train_source,
                 "train_samples": len(train_samples),
                 "validation_samples": len(validation_samples),
                 "device": str(environment.device),
@@ -624,6 +711,7 @@ def main() -> None:
                 checkpoint=checkpoint,
                 train_samples=train_samples,
                 validation_samples=validation_samples,
+                train_source=train_source,
                 device=environment.device,
             )
         )

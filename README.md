@@ -106,6 +106,14 @@ newly working distortion becomes another adapter with no code change. Use
 `--distortions a,b,c` to train a subset, `--resume` to continue an interrupted
 nine-adapter run, and `--precision bf16` to trade exact FP32 parity for speed.
 
+To train on whole shards rather than the 15 000-image subset, pass `--shards`.
+Images belonging to the validation split are dropped automatically, so shard_5
+can be listed without leaking into early stopping:
+
+```bash
+python3 lora/lora_train.py --mode all --head "$HEAD" --shards 0,1,2,3,4,5
+```
+
 ### 3. Run inference
 
 ```bash
@@ -119,6 +127,17 @@ python3 lora/lora_infer.py --mode all --split test --head "$HEAD"
 # whole test split, per-adapter and ensemble metrics, predictions to CSV
 python3 lora/lora_infer.py --mode ensemble --split test --head "$HEAD" \
     --output predictions/lora_ensemble.csv
+```
+
+`--adapters` chooses which adapters to run, in the order given. Any directory
+under `--adapters-root` is accepted, so adapters for future distortions work
+without a code change:
+
+```bash
+python3 lora/lora_infer.py --list-adapters          # what is trained, and is it complete
+python3 lora/lora_infer.py --mode ensemble --adapters jpeg,motion_blur --split test --head "$HEAD"
+python3 lora/lora_infer.py --mode ensemble --adapters all,jpeg          --split test --head "$HEAD"
+python3 lora/lora_infer.py --mode all      --adapters jpeg              --split test --head "$HEAD"
 ```
 
 Split runs also score the detector with the adapter switched off, so every
