@@ -410,13 +410,19 @@ def write_predictions(
     scores: dict[str, np.ndarray],
     adapters: Sequence[str],
     mean_scores: np.ndarray,
+    max_scores: np.ndarray,
     threshold: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["image_name", "label", "is_distorted"]
     if BASELINE_NAME in scores:
         fieldnames.append("prob_baseline")
-    fieldnames += [f"prob_{name}" for name in adapters] + ["prob_mean", "verdict"]
+    fieldnames += [f"prob_{name}" for name in adapters] + [
+        "prob_mean",
+        "prob_max",
+        "verdict_mean",
+        "verdict_max",
+    ]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -426,7 +432,9 @@ def write_predictions(
                 "label": "" if sample.label is None else int(sample.label),
                 "is_distorted": "" if sample.is_distorted is None else int(sample.is_distorted),
                 "prob_mean": f"{mean_scores[position]:.6f}",
-                "verdict": "fake" if mean_scores[position] >= threshold else "real",
+                "prob_max": f"{max_scores[position]:.6f}",
+                "verdict_mean": "fake" if mean_scores[position] >= threshold else "real",
+                "verdict_max": "fake" if max_scores[position] >= threshold else "real",
             }
             if BASELINE_NAME in scores:
                 row["prob_baseline"] = f"{scores[BASELINE_NAME][position]:.6f}"
@@ -551,7 +559,9 @@ def run_split(
             )
 
     if arguments.output is not None:
-        write_predictions(arguments.output, samples, scores, names, mean_scores, arguments.threshold)
+        write_predictions(
+            arguments.output, samples, scores, names, mean_scores, max_scores, arguments.threshold
+        )
         summary["output"] = str(arguments.output.resolve())
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
