@@ -142,3 +142,31 @@ python3 lora/lora_infer.py --mode all      --adapters jpeg              --split 
 
 Split runs also score the detector with the adapter switched off, so every
 number has a reference point. Pass `--no-baseline` to skip that pass.
+
+### 4. Paired clean-versus-distorted evaluation
+
+`--mode paired` keeps only the images the test manifest marks as undistorted,
+scores them as they are, then scores the very same images again with one
+randomly drawn distortion applied at a random severity, exactly as during
+training. Both passes share one image set and one fixed distortion draw, so the
+difference between the two columns isolates what the distortion costs and how
+much of it the adapters win back.
+
+```bash
+python3 lora/lora_infer.py --mode paired \
+    --adapters motion_blur,gaussian_blur,downsample_upscale \
+    --split test --head "$HEAD" --output predictions/lora_paired.csv
+```
+
+`--rounds` stacks several different distortions on each image, each with its own
+random severity, which is closer to what the challenge test set does:
+
+```bash
+python3 lora/lora_infer.py --mode paired --rounds 2 --split test --head "$HEAD"
+```
+
+The draw is controlled by `--distortion-ops`, `--rounds`, `--severity-min`,
+`--severity-max` and `--distortion-seed`. Results are reported per adapter, for
+the two ways of combining them into one score (mean and max of the per-adapter
+probabilities), and for the detector with no adapter, plus a breakdown of the
+distorted pass by the distortion each image happened to receive.

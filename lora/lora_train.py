@@ -664,6 +664,8 @@ def main() -> None:
                 "image_size": int(checkpoint["preprocessing"]["image_size"]),
                 "train_source": train_source,
                 "train_samples": len(train_samples),
+                "train_real": sum(1 for sample in train_samples if sample.label == 0),
+                "train_ai_generated": sum(1 for sample in train_samples if sample.label == 1),
                 "validation_samples": len(validation_samples),
                 "device": str(environment.device),
                 "device_name": torch.cuda.get_device_name(environment.device),
