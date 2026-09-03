@@ -77,14 +77,119 @@ never approximated with legacy JPEG. See
 [`docs/jpeg_ai_integration_notes.md`](docs/jpeg_ai_integration_notes.md) for
 the external setup and command-line integration details.
 
-The 20 added lightweight transforms reuse the five-level parameter tables from
-`aug_utils_val_private/utils_data.py`, but replace its heavy
-PyTorch/Kornia/Albumentations implementations with dependency-free
-NumPy/Pillow approximations. Their metadata records the original transform
-name, archive SHA-256, and `compatibility="parameter-table-only"` boundary.
+Verification status: the eight built-in distortions and the JPEG AI command
+contract were tested locally. A real JPEG AI encode/decode was not run in the
+current environment because the official runtime and model files were not
+installed.
 
-Verification status: all 28 built-in distortions were tested at all five
-severity levels for deterministic output, preserved shape and dtype, and
-JSON-serializable metadata. The JPEG AI command contract was also tested. A
-real JPEG AI encode/decode was not run because the official runtime and model
-files were not installed.
+## LoRA adapters
+
+`lora/` trains one LoRA adapter per distortion plus one adapter over all of
+them, on top of an already trained detector. The detector head is loaded from a
+`best.pt` checkpoint and frozen; only the LoRA matrices inside the visual trunk
+are trained. Because LoRA is initialised to zero, the adapted model starts out
+bit-for-bit identical to the base detector, and an adapter can be detached at
+any time to get the base detector back.
+
+Both released detector variants share the same frozen EVA02-CLIP-B/16 trunk and
+differ only in their 769-parameter head, so any adapter attaches to either one.
+Whether it *helps* the variant it was not trained against is an empirical
+question: pass a different `--head` to measure it.
+
+### 1. Build the training subset
+
+15 000 images are drawn from shard_5, which the detector never trained on. The
+images used by the native validation split are excluded first, so early stopping
+never sees a training image.
+
+```bash
+python3 lora/make_subset.py            # writes lora/lora_train_subset.csv
+```
+
+### 2. Train
+
+```bash
+HEAD=/data2/aidetection/runs/evaclipb_gap_distorted_only/best.pt
+
+# one adapter over every distortion
+python3 lora/lora_train.py --mode all --head "$HEAD"
+
+# one adapter per distortion, trained back to back
+python3 lora/lora_train.py --mode per-distortion --head "$HEAD"
+```
+
+Each adapter lands in `runs_lora/<name>/` as `adapter_config.json` +
+`adapter_model.safetensors`, next to a `metadata.json` recording the head it was
+paired with, the distortion policy, and its scores. Every run first prints where
+LoRA actually attached and refuses to continue if the target regex matched
+nothing.
+
+The distortion list comes from `augmentations.BUILTIN_DISTORTION_NAMES`, so a
+newly working distortion becomes another adapter with no code change. Use
+`--distortions a,b,c` to train a subset, `--resume` to continue an interrupted
+nine-adapter run, and `--precision bf16` to trade exact FP32 parity for speed.
+
+To train on whole shards rather than the 15 000-image subset, pass `--shards`.
+Images belonging to the validation split are dropped automatically, so shard_5
+can be listed without leaking into early stopping:
+
+```bash
+python3 lora/lora_train.py --mode all --head "$HEAD" --shards 0,1,2,3,4,5
+```
+
+### 3. Run inference
+
+```bash
+# single image, all eight per-distortion adapters, then their mean
+python3 lora/lora_infer.py --mode ensemble --image sample.jpg --head "$HEAD"
+
+# whole test split, single adapter, ROC-AUC and accuracy over
+# all / clean / distorted images
+python3 lora/lora_infer.py --mode all --split test --head "$HEAD"
+
+# whole test split, per-adapter and ensemble metrics, predictions to CSV
+python3 lora/lora_infer.py --mode ensemble --split test --head "$HEAD" \
+    --output predictions/lora_ensemble.csv
+```
+
+`--adapters` chooses which adapters to run, in the order given. Any directory
+under `--adapters-root` is accepted, so adapters for future distortions work
+without a code change:
+
+```bash
+python3 lora/lora_infer.py --list-adapters          # what is trained, and is it complete
+python3 lora/lora_infer.py --mode ensemble --adapters jpeg,motion_blur --split test --head "$HEAD"
+python3 lora/lora_infer.py --mode ensemble --adapters all,jpeg          --split test --head "$HEAD"
+python3 lora/lora_infer.py --mode all      --adapters jpeg              --split test --head "$HEAD"
+```
+
+Split runs also score the detector with the adapter switched off, so every
+number has a reference point. Pass `--no-baseline` to skip that pass.
+
+### 4. Paired clean-versus-distorted evaluation
+
+`--mode paired` keeps only the images the test manifest marks as undistorted,
+scores them as they are, then scores the very same images again with one
+randomly drawn distortion applied at a random severity, exactly as during
+training. Both passes share one image set and one fixed distortion draw, so the
+difference between the two columns isolates what the distortion costs and how
+much of it the adapters win back.
+
+```bash
+python3 lora/lora_infer.py --mode paired \
+    --adapters motion_blur,gaussian_blur,downsample_upscale \
+    --split test --head "$HEAD" --output predictions/lora_paired.csv
+```
+
+`--rounds` stacks several different distortions on each image, each with its own
+random severity, which is closer to what the challenge test set does:
+
+```bash
+python3 lora/lora_infer.py --mode paired --rounds 2 --split test --head "$HEAD"
+```
+
+The draw is controlled by `--distortion-ops`, `--rounds`, `--severity-min`,
+`--severity-max` and `--distortion-seed`. Results are reported per adapter, for
+the two ways of combining them into one score (mean and max of the per-adapter
+probabilities), and for the detector with no adapter, plus a breakdown of the
+distorted pass by the distortion each image happened to receive.

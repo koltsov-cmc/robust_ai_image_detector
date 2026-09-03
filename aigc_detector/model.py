@@ -172,6 +172,11 @@ class EvaClipGAPClassifier(nn.Module):
         self.backbone.eval()
         return self
 
+    def encode_tokens(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """Run the visual trunk. A linear probe never needs trunk gradients."""
+        with torch.no_grad():
+            return self.backbone.forward_features(pixel_values)
+
     def extract_gap_features(self, pixel_values: torch.Tensor) -> torch.Tensor:
         height, width = pixel_values.shape[-2:]
         patch_height, patch_width = self.patch_size
@@ -181,8 +186,7 @@ class EvaClipGAPClassifier(nn.Module):
                 f"patch size {self.patch_size}."
             )
 
-        with torch.no_grad():
-            tokens = self.backbone.forward_features(pixel_values)
+        tokens = self.encode_tokens(pixel_values)
 
         expected_patch_count = (height // patch_height) * (width // patch_width)
         expected_sequence_length = self.num_prefix_tokens + expected_patch_count
